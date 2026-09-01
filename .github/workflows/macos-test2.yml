@@ -1,0 +1,37 @@
+name: macOS Internals Lab
+
+on:
+  workflow_dispatch:  # lets you trigger it manually from the Actions tab
+
+jobs:
+  explore:
+    runs-on: macos-latest   # Apple Silicon macOS runner
+    steps:
+      - name: OS version
+        run: sw_vers
+
+      - name: SIP status
+        run: csrutil status
+
+      - name: List loaded launchd services
+        run: launchctl list | head -30
+
+      - name: Write a test LaunchAgent
+        run: |
+          cat << 'EOF' > /tmp/com.test.lab.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>com.test.lab</string>
+            <key>ProgramArguments</key>
+            <array><string>/bin/echo</string><string>hello</string></array>
+            <key>RunAtLoad</key><true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint /tmp/com.test.lab.plist
+
+      - name: Unified log snapshot
+        run: log show --last 1m --style compact | head -50
