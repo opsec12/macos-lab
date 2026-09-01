@@ -1,1 +1,95 @@
+name: macOS Internals Lab — Full
 
+on:
+  workflow_dispatch:
+
+jobs:
+  explore:
+    runs-on: macos-latest
+    steps:
+
+      # ---------- OS / environment baseline ----------
+      - name: OS version and architecture
+        run: |
+          sw_vers
+          uname -a
+          sysctl -n hw.model
+
+      # ---------- SIP (System Integrity Protection) ----------
+      - name: SIP status
+        run: csrutil status
+
+      # ---------- Gatekeeper ----------
+      - name: Gatekeeper status
+        run: spctl --status
+
+      - name: Gatekeeper assessment on a real signed app
+        run: spctl -a -v /System/Applications/Calculator.app
+
+      - name: Code signing details (what Gatekeeper actually checks)
+        run: codesign -dv --verbose=4 /System/Applications/Calculator.app
+
+      - name: Verify code signature validity
+        run: codesign --verify --verbose /System/Applications/Calculator.app
+
+      # ---------- TCC (Transparency, Consent, and Control) ----------
+      - name: Check for TCC database (expect restricted/empty on a fresh CI user)
+        continue-on-error: true
+        run: ls -la ~/Library/Application\ Support/com.apple.TCC/ 2>&1 || echo "TCC dir not accessible — itself informative"
+
+      - name: Attempt direct TCC.db query (expect SIP/permission failure)
+        continue-on-error: true
+        run: sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db "SELECT service, client FROM access;" 2>&1 || echo "Blocked — this is SIP protecting TCC.db even from this user context"
+
+      # ---------- launchd persistence ----------
+      - name: Enumerate existing LaunchAgents/LaunchDaemons
+        run: |
+          echo "-- System LaunchDaemons --"
+          ls -la /Library/LaunchDaemons/ | head -10
+          echo "-- System LaunchAgents --"
+          ls -la /Library/LaunchAgents/ 2>&1 | head -10
+          echo "-- User LaunchAgents --"
+          ls -la ~/Library/LaunchAgents/ 2>&1 | head -10
+
+      - name: Write and load a test LaunchAgent (simulated persistence)
+        run: |
+          mkdir -p ~/Library/LaunchAgents
+          cat << 'EOF' > ~/Library/LaunchAgents/com.test.lab.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>Label</key><string>com.test.lab</string>
+            <key>ProgramArguments</key>
+            <array><string>/bin/echo</string><string>persistence test</string></array>
+            <key>RunAtLoad</key><true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint ~/Library/LaunchAgents/com.test.lab.plist
+          launchctl load ~/Library/LaunchAgents/com.test.lab.plist
+          launchctl list | grep com.test.lab
+
+      - name: Clean up test LaunchAgent
+        run: |
+          launchctl unload ~/Library/LaunchAgents/com.test.lab.plist
+          rm ~/Library/LaunchAgents/com.test.lab.plist
+
+      # ---------- Unified logging ----------
+      - name: Snapshot recent unified log
+        run: log show --last 2m --style compact | head -50
+
+      - name: Search unified log for launchd activity (mini detection query)
+        run: log show --last 5m --predicate 'subsystem == "com.apple.xpc.launchd"' --style compact | head -30
+
+      # ---------- Endpoint Security framework (expected restricted) ----------
+      - name: Attempt eslogger (expect permission/entitlement failure)
+        continue-on-error: true
+        run: timeout 5 eslogger exec 2>&1 || echo "Blocked — ESF requires Full Disk Access/entitlements a CI runner won't have; same restriction real EDR agents must be granted"
+
+      # ---------- Bonus: mini detection logic, tying back to the actual job ----------
+      - name: Simple "detection" — flag any LaunchAgent load events in the log window
+        run: |
+          echo "Simulated detection rule: alert on launchd Load events for user-writable LaunchAgents"
+          log show --last 5m --predicate 'eventMessage CONTAINS "com.test.lab"' --style compact
